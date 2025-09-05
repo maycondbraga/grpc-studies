@@ -4,11 +4,13 @@ import com.md.grpc.studies.dtos.Financiamento
 import com.md.grpc.studies.dtos.Parcela
 import com.md.grpc.studies.enums.SistemaAmortizacao
 import org.springframework.stereotype.Service
+import java.math.BigDecimal
+import java.math.RoundingMode
 import java.time.LocalDate
-import kotlin.math.pow
 
 @Service
 class CalcularFinanciamento {
+
     fun execute(
         tipo: SistemaAmortizacao,
         valor: Double,
@@ -28,23 +30,28 @@ class CalcularFinanciamento {
         prazo: Int,
         dataPrimeiroVencimento: LocalDate
     ): Financiamento {
-        var saldoDevedor = valor
-        val amortizacao = valor / prazo
+        val principal = BigDecimal.valueOf(valor)
+        val taxaDecimal = BigDecimal.valueOf(taxa).divide(BigDecimal.valueOf(100), SCALE_INT, RoundingMode.HALF_EVEN)
         val parcelas = mutableListOf<Parcela>()
 
+        var saldo = principal
+        val amortizacaoExata = principal.divide(BigDecimal.valueOf(prazo.toLong()), SCALE_INT, RoundingMode.HALF_EVEN)
+
         for (i in 1..prazo) {
-            val juros = saldoDevedor * (taxa / 100)
-            val parcela = amortizacao + juros
-            saldoDevedor -= amortizacao
+            val jurosExato = saldo.multiply(taxaDecimal)
+            val amortizacaoAtualExata = if (i < prazo) amortizacaoExata else saldo
+            val parcelaExata = amortizacaoAtualExata.add(jurosExato)
+
+            saldo = saldo.subtract(amortizacaoAtualExata)
 
             parcelas.add(
                 Parcela(
                     parcela = i,
                     dataVencimento = dataPrimeiroVencimento.plusMonths((i - 1).toLong()),
-                    valorParcela = parcela,
-                    amortizacao = amortizacao,
-                    juros = juros,
-                    saldoDevedor = saldoDevedor
+                    valorParcela = parcelaExata.toDouble(),
+                    juros = jurosExato.toDouble(),
+                    amortizacao = amortizacaoAtualExata.toDouble(),
+                    saldoDevedor = if (i == prazo) 0.0 else saldo.toDouble()
                 )
             )
         }
@@ -58,27 +65,45 @@ class CalcularFinanciamento {
         prazo: Int,
         dataPrimeiroVencimento: LocalDate
     ): Financiamento {
-        var saldo = valor
-        val taxaDecimal = taxa / 100
-        val pmt = valor * (taxaDecimal * (1 + taxaDecimal).pow(prazo)) / ((1 + taxaDecimal).pow(prazo) - 1)
+        val principal = BigDecimal.valueOf(valor)
+        val taxaDecimal = BigDecimal.valueOf(taxa).divide(BigDecimal.valueOf(100), SCALE_INT, RoundingMode.HALF_EVEN)
+
+        val onePlus = BigDecimal.ONE.add(taxaDecimal)
+        val factor = onePlus.pow(prazo)
+        val numerator = principal.multiply(taxaDecimal.multiply(factor))
+        val denominator = factor.subtract(BigDecimal.ONE)
+        val pmtExato = numerator.divide(denominator, SCALE_INT, RoundingMode.HALF_EVEN)
+
         val parcelas = mutableListOf<Parcela>()
+        var saldo = principal
 
         for (i in 1..prazo) {
-            val juros = saldo * taxaDecimal
-            val amortizacao = pmt - juros
-            saldo -= amortizacao
+            val jurosExato = saldo.multiply(taxaDecimal)
+            val amortizacaoExata = if (i < prazo) {
+                pmtExato.subtract(jurosExato)
+            } else {
+                saldo
+            }
+            val parcelaExata = jurosExato.add(amortizacaoExata)
+
+            saldo = saldo.subtract(amortizacaoExata)
 
             parcelas.add(
                 Parcela(
                     parcela = i,
                     dataVencimento = dataPrimeiroVencimento.plusMonths((i - 1).toLong()),
-                    valorParcela = pmt,
-                    juros = juros,
-                    amortizacao = amortizacao,
-                    saldoDevedor = saldo
+                    valorParcela = parcelaExata.toDouble(),
+                    juros = jurosExato.toDouble(),
+                    amortizacao = amortizacaoExata.toDouble(),
+                    saldoDevedor = if (i == prazo) 0.0 else saldo.toDouble()
                 )
             )
         }
+
         return Financiamento(SistemaAmortizacao.PRICE, valor, taxa, prazo, dataPrimeiroVencimento, parcelas)
+    }
+
+    companion object {
+        private const val SCALE_INT = 15
     }
 }
